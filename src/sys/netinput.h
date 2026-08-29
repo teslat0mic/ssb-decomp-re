@@ -72,6 +72,7 @@ extern void syNetInputSetSavedInput(s32 player, u32 tick, u16 buttons, s8 stick_
 extern sb32 syNetInputGetHistoryFrame(s32 player, u32 tick, SYNetInputFrame *out_frame);
 extern sb32 syNetInputGetPublishedFrame(s32 player, SYNetInputFrame *out_frame);
 extern u32 syNetInputGetHistoryChecksum(s32 player, u32 tick_begin, u32 frame_count);
+extern u32 syNetInputAccumulateInputChecksum(u32 checksum, s32 player, SYNetInputFrame *frame);
 extern u32 syNetInputGetHistoryInputChecksum(u32 frame_count);
 extern u32 syNetInputGetHistoryInputValueChecksumForPlayer(s32 player, u32 tick_begin, u32 frame_count);
 extern void syNetInputGetHistoryInputValueChecksumWindow(u32 tick_begin, u32 frame_count, u32 *out_checksums,
