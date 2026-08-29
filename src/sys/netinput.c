@@ -346,26 +346,6 @@ u32 syNetInputAccumulateInputChecksum(u32 checksum, s32 player, SYNetInputFrame 
 	return checksum;
 }
 
-u32 syNetInputGetHistoryInputChecksum(u32 frame_count)
-{
-	SYNetInputFrame frame;
-	u32 checksum = 2166136261U;
-	u32 tick;
-	s32 player;
-
-	for (tick = 0; tick < frame_count; tick++)
-	{
-		for (player = 0; player < MAXCONTROLLERS; player++)
-		{
-			if (syNetInputGetHistoryFrame(player, tick, &frame) != FALSE)
-			{
-				checksum = syNetInputAccumulateInputChecksum(checksum, player, &frame);
-			}
-		}
-	}
-	return checksum;
-}
-
 u32 syNetInputGetHistoryInputValueChecksumForPlayer(s32 player, u32 tick_begin, u32 frame_count)
 {
 	SYNetInputFrame frame;
