@@ -25,7 +25,10 @@ sb32 sSYNetInputIsReplayMetadataValid;
  * was actually advanced by syNetInputFuncRead(). Accumulated at the same
  * point sSYNetInputTick is incremented, so a tick re-published while the
  * P2P start barrier holds is counted once, like the recorder. When a limit
- * is set the value at exactly that many ticks is frozen for the caller. */
+ * is set the value at exactly that many ticks is frozen for the caller.
+ * sSYNetInputPublishedTickCount counts advances and today moves in lockstep
+ * with sSYNetInputTick; anything that rewinds the tick (a future rollback
+ * via syNetInputSetTick) must save and restore these four values with it. */
 u32 sSYNetInputPublishedChecksum;
 u32 sSYNetInputPublishedTickCount;
 u32 sSYNetInputPublishedChecksumLimit;

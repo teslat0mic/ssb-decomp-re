@@ -190,6 +190,18 @@ void syNetReplayInitDebugEnv(void)
 			gSCManagerSceneData.scene_prev = nSCKindVSMode;
 			gSCManagerSceneData.scene_curr = nSCKindVSBattle;
 		}
+		else
+		{
+			/* Nothing will arm playback now, so no verdict can ever be produced;
+			 * without this a batch run would sit at the title screen forever. */
+			port_log("SSB64 Replay: playback load failed path=%s result=LOADFAIL\n", sSYNetReplayPlayPath);
+
+			if (sSYNetReplayRigExit != FALSE)
+			{
+				port_log("SSB64 Replay: SSB64_RIG_EXIT set, exiting with code %d\n", 3);
+				port_exit_process(3);
+			}
+		}
 	}
 #endif
 }
@@ -399,9 +411,13 @@ sb32 syNetReplayLoadDebugFile(const char *path)
 		(header.version != SYNETINPUT_REPLAY_VERSION) ||
 		(header.metadata_size != sizeof(SYNetInputReplayMetadata)) ||
 		(header.frame_size != sizeof(SYNetInputFrame)) ||
-		(header.frame_count > SYNETINPUT_REPLAY_MAX_FRAMES) ||
+		(header.frame_count == 0) || (header.frame_count > SYNETINPUT_REPLAY_MAX_FRAMES) ||
 		(header.player_count != MAXCONTROLLERS))
 	{
+#ifdef PORT
+		port_log("SSB64 Replay: rejected playback header path=%s magic=0x%08X version=%u frames=%u players=%u\n",
+		         path, header.magic, header.version, header.frame_count, header.player_count);
+#endif
 		fclose(fp);
 		return FALSE;
 	}
