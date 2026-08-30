@@ -8,6 +8,7 @@ extern void port_coroutine_yield(void);
 #include <sys/netinput.h>
 #include <sys/netpeer.h>
 #include <sys/netreplay.h>
+#include <sys/netsnapshot.h>
 #include <sys/netsync.h>
 #include <sys/video.h>
 #include <reloc_data.h>
@@ -123,6 +124,62 @@ void scVSBattleFuncUpdate(void)
 		if (syNetInputCheckStalled() != FALSE)
 		{
 			syNetPeerUpdate();
+			return;
+		}
+	}
+#endif
+#ifdef PORT
+	if ((syNetSnapshotCheckSyncTest() != FALSE) &&
+		(syNetInputGetTick() >= syNetSnapshotGetSyncTestStartTick()) &&
+		(syNetSnapshotCheckSyncTestWindow() != FALSE))
+	{
+		/* Simulate the tick, roll back to the state before it, simulate it again, and compare.
+		 * The second run must produce the same state hashes; if it does not, the snapshot is
+		 * missing something the tick reads. Static so its buffers are reused, not reallocated. */
+		static SYNetSnapshot sSCVSBattleSyncTestSnapshot;
+		static SYNetSnapshot sSCVSBattleSyncTestAfter;
+
+		if (syNetSnapshotSave(&sSCVSBattleSyncTestSnapshot) != FALSE)
+		{
+			SYNetSyncTickHash first;
+			SYNetSyncTickHash second;
+			s32 column;
+
+			syNetSnapshotNoteSyncTestTick();
+			ifCommonBattleUpdateInterfaceAll();
+			syNetSyncHashTick(&first);
+
+			/* Keep the real result of this tick: the comparison below runs the tick a second time
+			 * from the rolled-back state, and everything after this function (the draw pass above
+			 * all) must see the state the game would normally have. */
+			syNetSnapshotSave(&sSCVSBattleSyncTestAfter);
+
+			if (syNetSnapshotRestore(&sSCVSBattleSyncTestSnapshot) != FALSE)
+			{
+				ifCommonBattleUpdateInterfaceAll();
+				syNetSyncHashTick(&second);
+				syNetSnapshotRestore(&sSCVSBattleSyncTestAfter);
+
+				/* Column 0 is the `full` aggregate and would always be the first hit; report the
+				 * specific subsystem that differs, which is what points at the missing state. */
+				for (column = 1; column < SYNETSYNC_COLUMN_NUM; column++)
+				{
+					if (first.column[column] != second.column[column])
+					{
+						syNetSnapshotReportSyncTest(syNetInputGetTick(), FALSE, column);
+						break;
+					}
+				}
+				if ((column == SYNETSYNC_COLUMN_NUM) &&
+					(first.column[nSYNetSyncColumnFull] != second.column[nSYNetSyncColumnFull]))
+				{
+					syNetSnapshotReportSyncTest(syNetInputGetTick(), FALSE, nSYNetSyncColumnFull);
+				}
+			}
+			syNetSyncRecordTick();
+			syNetReplayUpdate();
+			syNetPeerUpdate();
+
 			return;
 		}
 	}

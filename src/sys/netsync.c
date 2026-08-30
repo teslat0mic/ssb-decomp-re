@@ -1975,6 +1975,23 @@ void syNetSyncRecordTick(void)
 void syNetSyncFinishVSSession(void)
 {
 #ifdef PORT
+	{
+		extern sb32 syNetSnapshotCheckSyncTest(void);
+		extern u32 syNetSnapshotGetSyncTestMismatches(void);
+
+		if (syNetSnapshotCheckSyncTest() != FALSE)
+		{
+			u32 mismatches = syNetSnapshotGetSyncTestMismatches();
+
+			extern u32 syNetSnapshotGetSyncTestCheckedTicks(void);
+
+			port_log("SSB64 Snapshot: synctest summary checked=%u mismatches=%u result=%s\n",
+			         syNetSnapshotGetSyncTestCheckedTicks(), mismatches,
+			         ((mismatches == 0) && (syNetSnapshotGetSyncTestCheckedTicks() > 0)) ? "PASS" : "FAIL");
+		}
+	}
+#endif
+#ifdef PORT
 	if (sSYNetSyncTraceFile != NULL)
 	{
 		fclose(sSYNetSyncTraceFile);
