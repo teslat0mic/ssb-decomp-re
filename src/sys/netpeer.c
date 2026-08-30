@@ -372,6 +372,8 @@ const SYNetPeerNameMap dSYNetPeerFighterNames[] =
 	{ "ness", nFTKindNess },
 };
 
+const char *dSYNetPeerCpuSlotEnvNames[] = { NULL, NULL, "SSB64_NETPLAY_P3", "SSB64_NETPLAY_P4" };
+
 const SYNetPeerNameMap dSYNetPeerItemRateNames[] =
 {
 	{ "none", nSCBattleItemSwitchNone },     { "off", nSCBattleItemSwitchNone },
@@ -467,6 +469,31 @@ void syNetPeerApplyEnvMatchSettings(SYNetInputReplayMetadata *metadata)
 		metadata->item_toggles = 0;
 	}
 
+	{
+		/* Slots 3 and 4 are CPUs when named. They are simulation, not network input: the AI writes
+		 * fp->input.cp and never reads the controller devices the netplay layer publishes to. */
+		s32 cpu_level = syNetPeerReadEnvInt("SSB64_NETPLAY_CPU_LEVEL", 9);
+		s32 slot;
+
+		if (cpu_level < 1) cpu_level = 1;
+		if (cpu_level > 9) cpu_level = 9;
+
+		for (slot = 2; slot < MAXCONTROLLERS; slot++)
+		{
+			s32 fighter =
+			syNetPeerReadEnvEnum(dSYNetPeerCpuSlotEnvNames[slot], dSYNetPeerFighterNames,
+			                     ARRAY_COUNT(dSYNetPeerFighterNames), -1);
+
+			if (fighter >= 0)
+			{
+				metadata->player_kinds[slot] = nFTPlayerKindCom;
+				metadata->fighter_kinds[slot] = (u8)fighter;
+				metadata->levels[slot] = (u8)cpu_level;
+				metadata->player_count = (u32)(slot + 1);
+			}
+		}
+	}
+
 	time_limit = syNetPeerReadEnvInt("SSB64_NETPLAY_TIME", SCBATTLE_TIMELIMIT_INFINITE);
 	metadata->time_limit = (u32)time_limit;
 
@@ -476,10 +503,12 @@ void syNetPeerApplyEnvMatchSettings(SYNetInputReplayMetadata *metadata)
 		 * match to end on time (and, with the stocks level, reach sudden death). */
 		metadata->game_rules |= SCBATTLE_GAMERULE_TIME;
 	}
-	port_log("SSB64 NetPeer: match settings stage=%u p1=%u p2=%u stocks=%u time=%u items=%u toggles=0x%08X rules=0x%X\n",
-	         metadata->stage_kind, metadata->fighter_kinds[0], metadata->fighter_kinds[1],
-	         metadata->stocks, metadata->time_limit, metadata->item_appearance_rate,
-	         metadata->item_toggles, metadata->game_rules);
+	port_log("SSB64 NetPeer: match settings stage=%u players=%u p1=%u p2=%u p3=%u/%u p4=%u/%u stocks=%u time=%u items=%u toggles=0x%08X rules=0x%X\n",
+	         metadata->stage_kind, metadata->player_count, metadata->fighter_kinds[0],
+	         metadata->fighter_kinds[1], metadata->player_kinds[2], metadata->fighter_kinds[2],
+	         metadata->player_kinds[3], metadata->fighter_kinds[3], metadata->stocks,
+	         metadata->time_limit, metadata->item_appearance_rate, metadata->item_toggles,
+	         metadata->game_rules);
 }
 #endif
 
