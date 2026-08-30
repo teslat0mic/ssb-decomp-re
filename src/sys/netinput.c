@@ -35,9 +35,9 @@ u32 sSYNetInputRecordedFrameCount;
 sb32 sSYNetInputIsRecording;
 sb32 sSYNetInputIsReplayMetadataValid;
 /* Source-independent checksum over every frame published for a tick that
- * was actually advanced by syNetInputFuncRead(). Accumulated at the same
- * point sSYNetInputTick is incremented, so a tick re-published while the
- * P2P start barrier holds is counted once, like the recorder. When a limit
+ * was actually advanced by syNetInputFuncRead(). Publishing now happens only
+ * on VIs that advance, so a held VI contributes nothing at all rather than
+ * being published and counted once. When a limit
  * is set the value at exactly that many ticks is frozen for the caller.
  * sSYNetInputPublishedTickCount counts advances and today moves in lockstep
  * with sSYNetInputTick; anything that rewinds the tick (a future rollback
@@ -758,24 +758,23 @@ sb32 syNetInputGetReplayMetadata(SYNetInputReplayMetadata *out_metadata)
 
 void syNetInputFuncRead(void)
 {
-	SYNetInputFrame frame;
+	SYNetInputFrame frames[MAXCONTROLLERS];
 	u32 tick;
 	s32 player;
 
 	syControllerFuncRead();
 	tick = syNetInputGetTick();
 
+	/* Resolve every VI - that is what schedules this side's local sample and keeps frames flowing
+	 * to the peer while we wait. Publishing and recording, though, belong to ticks that actually
+	 * advance: publishing on a held VI re-publishes the same tick, and button_tap is derived as an
+	 * edge against the last published frame, so the second publish of an identical frame yields no
+	 * edges and swallows the press. Recording on a held VI is what labelled netplay recordings one
+	 * tick early. */
 	for (player = 0; player < MAXCONTROLLERS; player++)
 	{
-		syNetInputResolveFrame(player, tick, &frame);
-		syNetInputPublishFrame(player, &frame);
-
-		if (sSYNetInputIsRecording != FALSE)
-		{
-			syNetInputSetReplayFrame(player, tick, &frame);
-		}
+		syNetInputResolveFrame(player, tick, &frames[player]);
 	}
-	syNetInputPublishMainController();
 
 	if (syNetPeerCheckStartBarrierReleased() == FALSE)
 	{
@@ -797,6 +796,17 @@ void syNetInputFuncRead(void)
 		sSYNetInputIsStalled = FALSE;
 	}
 #endif
+	for (player = 0; player < MAXCONTROLLERS; player++)
+	{
+		syNetInputPublishFrame(player, &frames[player]);
+
+		if (sSYNetInputIsRecording != FALSE)
+		{
+			syNetInputSetReplayFrame(player, tick, &frames[player]);
+		}
+	}
+	syNetInputPublishMainController();
+
 	for (player = 0; player < MAXCONTROLLERS; player++)
 	{
 		sSYNetInputPublishedChecksum = syNetInputAccumulateInputChecksum(
