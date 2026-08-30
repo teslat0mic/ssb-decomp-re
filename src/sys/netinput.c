@@ -15,6 +15,19 @@ SYNetInputSlot sSYNetInputSlots[MAXCONTROLLERS];
 SYNetInputFrame sSYNetInputHistory[MAXCONTROLLERS][SYNETINPUT_HISTORY_LENGTH];
 SYNetInputFrame sSYNetInputRemoteHistory[MAXCONTROLLERS][SYNETINPUT_HISTORY_LENGTH];
 SYNetInputFrame sSYNetInputSavedHistory[MAXCONTROLLERS][SYNETINPUT_HISTORY_LENGTH];
+#ifdef PORT
+/* Local controller samples scheduled `input delay` ticks into the future, so this machine applies
+ * them on the same tick the peer does; also what the peer is sent. */
+SYNetInputFrame sSYNetInputLocalScheduled[MAXCONTROLLERS][SYNETINPUT_HISTORY_LENGTH];
+
+/* Set when the last syNetInputFuncRead() declined to advance because the remote input for the
+ * next tick had not arrived; the VS update reads it and skips the simulation for that VI. */
+sb32 sSYNetInputIsStalled;
+
+/* VIs spent waiting for remote input. The battle clock subtracts these so it advances once per
+ * simulated tick rather than once per VI (see ifCommonTimerFuncRun). */
+u32 sSYNetInputStalledVICount;
+#endif
 SYNetInputFrame sSYNetInputReplayFrames[MAXCONTROLLERS][SYNETINPUT_REPLAY_MAX_FRAMES];
 SYNetInputReplayMetadata sSYNetInputReplayMetadata;
 u32 sSYNetInputTick;
@@ -103,6 +116,10 @@ void syNetInputReset(void)
 	s32 i;
 
 	sSYNetInputTick = 0;
+#ifdef PORT
+	sSYNetInputIsStalled = FALSE;
+	sSYNetInputStalledVICount = 0;
+#endif
 	sSYNetInputRecordedFrameCount = 0;
 	sSYNetInputIsRecording = FALSE;
 	sSYNetInputIsReplayMetadataValid = FALSE;
@@ -148,6 +165,9 @@ void syNetInputReset(void)
 		{
 			syNetInputClearFrame(&sSYNetInputHistory[player][i]);
 			syNetInputClearFrame(&sSYNetInputRemoteHistory[player][i]);
+#ifdef PORT
+			syNetInputClearFrame(&sSYNetInputLocalScheduled[player][i]);
+#endif
 			syNetInputClearFrame(&sSYNetInputSavedHistory[player][i]);
 		}
 		for (i = 0; i < SYNETINPUT_REPLAY_MAX_FRAMES; i++)
@@ -201,10 +221,132 @@ void syNetInputSetSavedInput(s32 player, u32 tick, u16 buttons, s8 stick_x, s8 s
 	}
 }
 
+#ifdef PORT
+#include <stdlib.h>
+
+extern void port_log(const char *fmt, ...);
+
+/* SSB64_NETPLAY_FAKE_INPUT=<seed>: deterministic stand-in for the local controller.
+ *
+ * Netplay predicts a missing remote input by repeating the last one, so a peer whose controller
+ * never moves is predicted perfectly and an automated test reports a sync that real play does not
+ * have. This generates a reproducible, input-rich stream from (seed, player, tick) so those tests
+ * exercise the same paths a player does. Debug aid only: it is off unless the env var is set. */
+u32 sSYNetInputFakeSeed;
+sb32 sSYNetInputIsFakeInput;
+
+void syNetInputInitFakeInputEnv(void)
+{
+	char *env = getenv("SSB64_NETPLAY_FAKE_INPUT");
+
+	sSYNetInputIsFakeInput = FALSE;
+	sSYNetInputFakeSeed = 0;
+
+	if (env != NULL)
+	{
+		u32 seed = (u32)strtoul(env, NULL, 10);
+
+		if (seed != 0)
+		{
+			sSYNetInputFakeSeed = seed;
+			sSYNetInputIsFakeInput = TRUE;
+			port_log("SSB64 NetInput: SSB64_NETPLAY_FAKE_INPUT seed=%u (local input is synthetic)\n", seed);
+		}
+	}
+}
+
+u32 syNetInputFakeHash(s32 player, u32 tick, u32 salt)
+{
+	u32 h = 2166136261U;
+
+	h = (h ^ sSYNetInputFakeSeed) * 16777619U;
+	h = (h ^ (u32)player) * 16777619U;
+	h = (h ^ tick) * 16777619U;
+	h = (h ^ salt) * 16777619U;
+	h ^= h >> 15;
+
+	return h;
+}
+
+void syNetInputMakeFakeFrame(s32 player, u32 tick, SYNetInputFrame *out_frame)
+{
+	/* Hold each decision for a few ticks: single-frame noise would exercise the input plumbing
+	 * but never produce a real action (a jump, a smash, a grab). */
+	u32 slot = tick / 7;
+	u32 h = syNetInputFakeHash(player, slot, 0);
+	u16 buttons = 0;
+	s8 stick_x = 0;
+	s8 stick_y = 0;
+
+	if ((h & 0x00000003U) == 0)
+	{
+		buttons |= CONT_A;
+	}
+	if ((h & 0x0000001CU) == 0)
+	{
+		buttons |= CONT_B;
+	}
+	if ((h & 0x000000E0U) == 0)
+	{
+		buttons |= CONT_G;   /* Z */
+	}
+	if ((h & 0x00000700U) == 0)
+	{
+		buttons |= CONT_R;
+	}
+	if ((h & 0x00003800U) == 0)
+	{
+		buttons |= CONT_UP;
+	}
+	stick_x = (s8)((s32)((h >> 16) & 0xFFU) - 128);
+	stick_y = (s8)((s32)((h >> 24) & 0xFFU) - 128);
+
+	syNetInputMakeFrame(out_frame, tick, buttons, stick_x, stick_y, nSYNetInputSourceLocal, FALSE);
+}
+#endif
+
 void syNetInputMakeLocalFrame(s32 player, u32 tick, SYNetInputFrame *out_frame)
 {
 	SYController *controller = &gSYControllerDevices[player];
 
+#ifdef PORT
+	{
+		extern u32 syNetPeerGetActiveInputDelay(void);
+		extern sb32 syNetPeerCheckInputSchedulingActive(void);
+
+		if (syNetPeerCheckInputSchedulingActive() != FALSE)
+		{
+			u32 delay = syNetPeerGetActiveInputDelay();
+			SYNetInputFrame sample;
+
+			/* Schedule this VI's sample for tick + delay, the tick the peer is also told to apply
+			 * it on, then apply whatever was scheduled for the current tick. The first `delay`
+			 * ticks have nothing scheduled and run neutral, mirroring the remote side. */
+			if (sSYNetInputIsFakeInput != FALSE)
+			{
+				syNetInputMakeFakeFrame(player, tick + delay, &sample);
+			}
+			else
+			{
+				syNetInputMakeFrame(&sample, tick + delay, controller->button_hold,
+				                    controller->stick_range.x, controller->stick_range.y,
+				                    nSYNetInputSourceLocal, FALSE);
+			}
+			syNetInputStoreFrame(sSYNetInputLocalScheduled, player, &sample);
+
+			if (syNetInputGetStoredFrame(sSYNetInputLocalScheduled, player, tick, out_frame) == FALSE)
+			{
+				syNetInputMakeFrame(out_frame, tick, 0, 0, 0, nSYNetInputSourceLocal, FALSE);
+			}
+			return;
+		}
+	}
+	if (sSYNetInputIsFakeInput != FALSE)
+	{
+		syNetInputMakeFakeFrame(player, tick, out_frame);
+		return;
+	}
+#endif
 	syNetInputMakeFrame
 	(
 		out_frame,
@@ -296,6 +438,37 @@ void syNetInputPublishMainController(void)
 	gSYControllerMain.stick_range.x = gSYControllerDevices[0].stick_range.x;
 	gSYControllerMain.stick_range.y = gSYControllerDevices[0].stick_range.y;
 }
+
+#ifdef PORT
+sb32 syNetInputCheckStalled(void)
+{
+	return sSYNetInputIsStalled;
+}
+
+u32 syNetInputGetStalledVICount(void)
+{
+	return sSYNetInputStalledVICount;
+}
+
+/* Called when the battle clock is (re)started, at which point the game also zeroes the VI counter
+ * (sySchedulerSetTicCount(0)); the waited-VI count has to restart from the same origin. */
+void syNetInputResetStalledVICount(void)
+{
+	sSYNetInputStalledVICount = 0;
+}
+
+/* TRUE when a confirmed remote frame for `tick` is already stored. */
+sb32 syNetInputCheckRemoteFrameReady(s32 player, u32 tick)
+{
+	return syNetInputGetStoredFrame(sSYNetInputRemoteHistory, player, tick, NULL);
+}
+
+/* A local sample already scheduled for `tick` (netplay input delay). */
+sb32 syNetInputGetScheduledFrame(s32 player, u32 tick, SYNetInputFrame *out_frame)
+{
+	return syNetInputGetStoredFrame(sSYNetInputLocalScheduled, player, tick, out_frame);
+}
+#endif
 
 sb32 syNetInputGetHistoryFrame(s32 player, u32 tick, SYNetInputFrame *out_frame)
 {
@@ -557,6 +730,22 @@ void syNetInputFuncRead(void)
 	{
 		return;
 	}
+#ifdef PORT
+	{
+		extern sb32 syNetPeerCheckSimulationInputReady(u32 tick);
+
+		/* Flow control: without the remote input for this tick, simulating would mean guessing,
+		 * and nothing here can undo a wrong guess. Hold the tick instead - the peer that is
+		 * behind keeps running and will supply it shortly. */
+		if (syNetPeerCheckSimulationInputReady(tick) == FALSE)
+		{
+			sSYNetInputIsStalled = TRUE;
+			sSYNetInputStalledVICount++;
+			return;
+		}
+		sSYNetInputIsStalled = FALSE;
+	}
+#endif
 	for (player = 0; player < MAXCONTROLLERS; player++)
 	{
 		sSYNetInputPublishedChecksum = syNetInputAccumulateInputChecksum(

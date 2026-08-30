@@ -113,6 +113,20 @@ void scVSBattleFuncUpdate(void)
 	{
 		return;
 	}
+#ifdef PORT
+	{
+		extern sb32 syNetInputCheckStalled(void);
+
+		/* The input read declined to advance this VI (remote input not in yet). Keep the network
+		 * running so the peer still receives our frames, but do not simulate: the tick has not
+		 * advanced, so simulating would repeat one. */
+		if (syNetInputCheckStalled() != FALSE)
+		{
+			syNetPeerUpdate();
+			return;
+		}
+	}
+#endif
 	ifCommonBattleUpdateInterfaceAll();
 	syNetSyncRecordTick();
 	syNetReplayUpdate();

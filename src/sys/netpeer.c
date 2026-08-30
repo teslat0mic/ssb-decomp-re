@@ -12,6 +12,8 @@
 extern char *getenv(const char *name);
 extern int atoi(const char *s);
 extern void port_log(const char *fmt, ...);
+extern sb32 syNetInputGetScheduledFrame(s32 player, u32 tick, SYNetInputFrame *out_frame);
+extern sb32 syNetInputCheckRemoteFrameReady(s32 player, u32 tick);
 #endif
 
 #ifdef PORT
@@ -105,6 +107,7 @@ sb32 sSYNetPeerBattleBarrierReleased;
 u32 sSYNetPeerBattleBarrierWaitFrames;
 u32 sSYNetPeerBattleStartRepeatFrames;
 u32 sSYNetPeerExecutionHoldFrames;
+u32 sSYNetPeerStallFrames;
 sb32 sSYNetPeerExecutionBeginLogged;
 
 #ifdef PORT
@@ -694,6 +697,12 @@ void syNetPeerInitDebugEnv(void)
 	}
 	sSYNetPeerIsEnabled = TRUE;
 
+	{
+		extern void syNetInputInitFakeInputEnv(void);
+
+		syNetInputInitFakeInputEnv();
+	}
+
 	local_player_env = getenv("SSB64_NETPLAY_LOCAL_PLAYER");
 	remote_player_env = getenv("SSB64_NETPLAY_REMOTE_PLAYER");
 	delay_env = getenv("SSB64_NETPLAY_DELAY");
@@ -807,6 +816,7 @@ void syNetPeerStartVSSession(void)
 	sSYNetPeerBattleBarrierWaitFrames = 0;
 	sSYNetPeerBattleStartRepeatFrames = 0;
 	sSYNetPeerExecutionHoldFrames = 0;
+	sSYNetPeerStallFrames = 0;
 	sSYNetPeerExecutionBeginLogged = (sSYNetPeerBattleBarrierEnabled == FALSE) ? TRUE : FALSE;
 
 	syNetInputSetSlotSource(sSYNetPeerLocalPlayer, nSYNetInputSourceLocal);
@@ -816,6 +826,64 @@ void syNetPeerStartVSSession(void)
 	         (sSYNetPeerBootstrapIsHost != FALSE) ? "host" : "client",
 	         sSYNetPeerLocalPlayer, sSYNetPeerRemotePlayer, sSYNetPeerInputDelay,
 	         sSYNetPeerBattleBarrierEnabled, syNetInputGetTick());
+#endif
+}
+
+/* The input delay in force for the local player. Netplay schedules the local sample `delay` ticks
+ * ahead so both machines apply it on the same tick (see netinput.c). Zero when no session is
+ * running, which keeps offline play and replays on the original path. */
+u32 syNetPeerGetActiveInputDelay(void)
+{
+#ifdef PORT
+	if ((sSYNetPeerIsEnabled == FALSE) || (sSYNetPeerIsActive == FALSE))
+	{
+		return 0;
+	}
+	return sSYNetPeerInputDelay;
+#else
+	return 0;
+#endif
+}
+
+/* TRUE while a netplay session is running, i.e. while local input must be scheduled rather than
+ * applied on the spot (true even for delay 0, so the send path always reads the schedule). */
+sb32 syNetPeerCheckInputSchedulingActive(void)
+{
+#ifdef PORT
+	return ((sSYNetPeerIsEnabled != FALSE) && (sSYNetPeerIsActive != FALSE)) ? TRUE : FALSE;
+#else
+	return FALSE;
+#endif
+}
+
+/* Whether tick `tick` may be simulated: only once the remote player's input for it is confirmed.
+ * Always true when no session is running, and during the first `delay` ticks, for which no remote
+ * frame can exist yet (both machines run those neutral by construction). */
+sb32 syNetPeerCheckSimulationInputReady(u32 tick)
+{
+#ifdef PORT
+	if ((sSYNetPeerIsEnabled == FALSE) || (sSYNetPeerIsActive == FALSE))
+	{
+		return TRUE;
+	}
+	if (tick < sSYNetPeerInputDelay)
+	{
+		return TRUE;
+	}
+	if (syNetInputCheckRemoteFrameReady(sSYNetPeerRemotePlayer, tick) != FALSE)
+	{
+		return TRUE;
+	}
+	sSYNetPeerStallFrames++;
+
+	if ((sSYNetPeerStallFrames % SYNETPEER_LOG_INTERVAL) == 1)
+	{
+		port_log("SSB64 NetPeer: waiting for remote input tick=%u stalls=%u highest_remote=%u\n",
+		         tick, sSYNetPeerStallFrames, sSYNetPeerHighestRemoteTick);
+	}
+	return FALSE;
+#else
+	return TRUE;
 #endif
 }
 
@@ -855,14 +923,18 @@ void syNetPeerBuildPacket(u8 *buffer, u32 *out_size)
 		*out_size = 0;
 		return;
 	}
-	latest_tick = published_frame.tick;
+	/* Send the frames the peer has not applied yet: the local samples already scheduled for
+	 * `tick + delay`. They carry their final ticks, so the peer applies exactly what this machine
+	 * will apply, on the same tick. (Sending the published history instead would hand the peer
+	 * frames it needed `delay` ticks ago.) */
+	latest_tick = published_frame.tick + syNetPeerGetActiveInputDelay();
 
 	for (back = SYNETPEER_MAX_PACKET_FRAMES - 1; back >= 0; back--)
 	{
 		if ((latest_tick >= (u32)back) &&
-			(syNetInputGetHistoryFrame(sSYNetPeerLocalPlayer, latest_tick - back, &history_frame) != FALSE))
+			(syNetInputGetScheduledFrame(sSYNetPeerLocalPlayer, latest_tick - back, &history_frame) != FALSE))
 		{
-			frames[frame_count].tick = history_frame.tick + sSYNetPeerInputDelay;
+			frames[frame_count].tick = history_frame.tick;
 			frames[frame_count].buttons = history_frame.buttons;
 			frames[frame_count].stick_x = history_frame.stick_x;
 			frames[frame_count].stick_y = history_frame.stick_y;

@@ -2691,7 +2691,18 @@ void ifCommonTimerFuncRun(GObj *interface_gobj)
 
     if (sIFCommonTimerIsStarted != FALSE)
     {
+#ifdef PORT
+        {
+            /* Count simulated ticks, not VIs: netplay can wait several VIs for a remote input and
+             * those must not age the match clock, or two peers disagree about the time remaining
+             * (and about `battle` state generally). Zero outside netplay. */
+            extern u32 syNetInputGetStalledVICount(void);
+
+            time_update = sySchedulerGetTicCount() - syNetInputGetStalledVICount();
+        }
+#else
         time_update = sySchedulerGetTicCount();
+#endif
         time_delta = time_update - sIFCommonTimerStamp;
 
         if (time_delta != 0)
@@ -3404,6 +3415,15 @@ void ifCommonBattleUpdateInterfaceAll(void)
         sIFCommonTimerStamp = 0;
 
         sySchedulerSetTicCount(0);
+#ifdef PORT
+        {
+            /* The VI counter restarts here, so the count of VIs spent waiting for remote input
+             * must restart with it - the clock below is (VIs since GO) - (waits since GO). */
+            extern void syNetInputResetStalledVICount(void);
+
+            syNetInputResetStalledVICount();
+        }
+#endif
     }
     switch (gSCManagerBattleState->game_status)
     {
