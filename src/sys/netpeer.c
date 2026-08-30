@@ -530,6 +530,13 @@ void syNetPeerApplyEnvMatchSettings(SYNetInputReplayMetadata *metadata)
 }
 #endif
 
+#ifdef PORT
+s32 syNetPeerGetLocalPlayer(void)
+{
+	return sSYNetPeerLocalPlayer;
+}
+#endif
+
 void syNetPeerMakeBootstrapMetadata(SYNetInputReplayMetadata *metadata)
 {
 	s32 player;

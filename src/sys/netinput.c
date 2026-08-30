@@ -110,6 +110,13 @@ sb32 syNetInputGetStoredFrame(SYNetInputFrame history[][SYNETINPUT_HISTORY_LENGT
 	return TRUE;
 }
 
+#ifdef PORT
+/* The tick each slot has already scheduled a sample for, so a stalled VI cannot rewrite a frame
+ * that has already been sent. SYNETINPUT_NO_SCHEDULED_TICK means "nothing scheduled yet". */
+#define SYNETINPUT_NO_SCHEDULED_TICK 0xFFFFFFFFU
+u32 sSYNetInputScheduledTick[MAXCONTROLLERS];
+#endif
+
 void syNetInputReset(void)
 {
 	s32 player;
@@ -119,6 +126,11 @@ void syNetInputReset(void)
 #ifdef PORT
 	sSYNetInputIsStalled = FALSE;
 	sSYNetInputStalledVICount = 0;
+
+	for (player = 0; player < MAXCONTROLLERS; player++)
+	{
+		sSYNetInputScheduledTick[player] = SYNETINPUT_NO_SCHEDULED_TICK;
+	}
 #endif
 	sSYNetInputRecordedFrameCount = 0;
 	sSYNetInputIsRecording = FALSE;
@@ -305,6 +317,22 @@ void syNetInputMakeFakeFrame(s32 player, u32 tick, SYNetInputFrame *out_frame)
 }
 #endif
 
+#ifdef PORT
+/* Synthetic input stands in for THE controller, so it belongs to the slot this peer owns and
+ * nothing else. Filling every slot made the two peers run with different controller arrays for the
+ * whole match, which is noise in precisely the comparison meant to detect desyncs. */
+sb32 syNetInputCheckFakeInputSlot(s32 player)
+{
+	extern s32 syNetPeerGetLocalPlayer(void);
+
+	if (sSYNetInputIsFakeInput == FALSE)
+	{
+		return FALSE;
+	}
+	return (player == syNetPeerGetLocalPlayer()) ? TRUE : FALSE;
+}
+#endif
+
 void syNetInputMakeLocalFrame(s32 player, u32 tick, SYNetInputFrame *out_frame)
 {
 	SYController *controller = &gSYControllerDevices[player];
@@ -317,22 +345,45 @@ void syNetInputMakeLocalFrame(s32 player, u32 tick, SYNetInputFrame *out_frame)
 		if (syNetPeerCheckInputSchedulingActive() != FALSE)
 		{
 			u32 delay = syNetPeerGetActiveInputDelay();
+			u32 scheduled_tick = tick + delay;
 			SYNetInputFrame sample;
 
 			/* Schedule this VI's sample for tick + delay, the tick the peer is also told to apply
 			 * it on, then apply whatever was scheduled for the current tick. The first `delay`
-			 * ticks have nothing scheduled and run neutral, mirroring the remote side. */
-			if (sSYNetInputIsFakeInput != FALSE)
+			 * ticks have nothing scheduled and run neutral, mirroring the remote side.
+			 *
+			 * Schedule each tick ONCE. A stalled VI does not advance the tick, so without this the
+			 * next VI rewrites the slot for the same future tick with a fresher controller reading
+			 * - after the older value has already been sent. The peer then applies what it received
+			 * while this side applies the overwrite, and the two diverge for that tick. */
+			if (sSYNetInputScheduledTick[player] != scheduled_tick)
 			{
-				syNetInputMakeFakeFrame(player, tick + delay, &sample);
+				extern sb32 syNetReplayGetLocalInputFrame(u32 tick, SYNetInputFrame *out_frame);
+				extern s32 syNetPeerGetLocalPlayer(void);
+
+				if ((player == syNetPeerGetLocalPlayer()) &&
+					(syNetReplayGetLocalInputFrame(scheduled_tick, &sample) != FALSE))
+				{
+					/* A recorded controller session standing in for the controller, so a desync a
+					 * human found can be re-run until it is understood. */
+					sample.tick = scheduled_tick;
+					sample.source = nSYNetInputSourceLocal;
+					sample.is_predicted = FALSE;
+					sample.is_valid = TRUE;
+				}
+				else if (syNetInputCheckFakeInputSlot(player) != FALSE)
+				{
+					syNetInputMakeFakeFrame(player, scheduled_tick, &sample);
+				}
+				else
+				{
+					syNetInputMakeFrame(&sample, scheduled_tick, controller->button_hold,
+					                    controller->stick_range.x, controller->stick_range.y,
+					                    nSYNetInputSourceLocal, FALSE);
+				}
+				syNetInputStoreFrame(sSYNetInputLocalScheduled, player, &sample);
+				sSYNetInputScheduledTick[player] = scheduled_tick;
 			}
-			else
-			{
-				syNetInputMakeFrame(&sample, tick + delay, controller->button_hold,
-				                    controller->stick_range.x, controller->stick_range.y,
-				                    nSYNetInputSourceLocal, FALSE);
-			}
-			syNetInputStoreFrame(sSYNetInputLocalScheduled, player, &sample);
 
 			if (syNetInputGetStoredFrame(sSYNetInputLocalScheduled, player, tick, out_frame) == FALSE)
 			{
@@ -341,7 +392,7 @@ void syNetInputMakeLocalFrame(s32 player, u32 tick, SYNetInputFrame *out_frame)
 			return;
 		}
 	}
-	if (sSYNetInputIsFakeInput != FALSE)
+	if (syNetInputCheckFakeInputSlot(player) != FALSE)
 	{
 		syNetInputMakeFakeFrame(player, tick, out_frame);
 		return;

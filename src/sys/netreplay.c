@@ -159,6 +159,30 @@ void syNetReplayApplyBattleMetadata(const SYNetInputReplayMetadata *metadata)
 	gSCManagerSceneData.gkind = metadata->stage_kind;
 }
 
+#ifdef PORT
+sb32 sSYNetReplayIsLocalInputLoaded;
+u32 sSYNetReplayLocalInputFrameCount;
+
+/* The recorded stream that stands in for this peer's controller. Loading reuses the normal replay
+ * loader and then disarms playback: the other slots must keep coming from the network and the AI,
+ * and the match settings from the bootstrap, or this would be a single-player replay instead of a
+ * netplay session. */
+sb32 syNetReplayGetLocalInputFrame(u32 tick, SYNetInputFrame *out_frame)
+{
+	if ((sSYNetReplayIsLocalInputLoaded == FALSE) || (tick >= sSYNetReplayLocalInputFrameCount))
+	{
+		return FALSE;
+	}
+	if (out_frame != NULL)
+	{
+		extern s32 syNetPeerGetLocalPlayer(void);
+
+		*out_frame = sSYNetReplayLoadedFrames[syNetPeerGetLocalPlayer()][tick];
+	}
+	return TRUE;
+}
+#endif
+
 void syNetReplayInitDebugEnv(void)
 {
 #ifdef PORT
@@ -182,6 +206,28 @@ void syNetReplayInitDebugEnv(void)
 			sSYNetReplayRecordFrameLimit = frame_limit;
 		}
 	}
+	{
+		const char *local_input_env = getenv("SSB64_NETPLAY_LOCAL_INPUT");
+
+		if ((local_input_env != NULL) && (local_input_env[0] != '\0'))
+		{
+			if (syNetReplayLoadDebugFile(local_input_env) != FALSE)
+			{
+				sSYNetReplayIsLocalInputLoaded = TRUE;
+				sSYNetReplayLocalInputFrameCount = sSYNetReplayLoadedFrameCount;
+				/* Playback must stay disarmed - only this peer's own slot is replaced. */
+				sSYNetReplayIsPlaybackLoaded = FALSE;
+				port_log("SSB64 Replay: local netplay input from path=%s frames=%u\n",
+				         local_input_env, sSYNetReplayLocalInputFrameCount);
+			}
+			else
+			{
+				port_log("SSB64 Replay: SSB64_NETPLAY_LOCAL_INPUT failed to load path=%s\n",
+				         local_input_env);
+			}
+		}
+	}
+
 	if (sSYNetReplayPlayPath != NULL)
 	{
 		if (syNetReplayLoadDebugFile(sSYNetReplayPlayPath) != FALSE)
