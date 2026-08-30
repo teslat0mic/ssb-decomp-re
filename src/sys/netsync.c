@@ -1903,6 +1903,15 @@ void syNetSyncRecordTick(void)
 	{
 		return;
 	}
+
+	/* A row with no published input behind it describes the pre-input state and belongs to no
+	 * tick. In netplay the battle update reaches here once before the input read has published
+	 * anything; keeping that row put every later row one ahead of the input stream, which is what
+	 * stopped a recorded netplay match from reproducing when replayed. */
+	if (syNetInputGetPublishedTickCount() == 0)
+	{
+		return;
+	}
 	tick = sSYNetSyncTickCount;
 	syNetSyncHashTick(&rec);
 
