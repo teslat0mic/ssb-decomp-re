@@ -1103,7 +1103,6 @@ sb32 syNetPeerCheckStartBarrierReleased(void)
 
 void syNetPeerBuildPacket(u8 *buffer, u32 *out_size)
 {
-	SYNetInputFrame published_frame;
 	SYNetInputFrame history_frame;
 	SYNetPeerPacketFrame frames[SYNETPEER_MAX_PACKET_FRAMES];
 	SYNetPeerPacketFrame zero_frame;
@@ -1117,16 +1116,16 @@ void syNetPeerBuildPacket(u8 *buffer, u32 *out_size)
 	memset(frames, 0, sizeof(frames));
 	memset(&zero_frame, 0, sizeof(zero_frame));
 
-	if (syNetInputGetPublishedFrame(sSYNetPeerLocalPlayer, &published_frame) == FALSE)
-	{
-		*out_size = 0;
-		return;
-	}
 	/* Send the frames the peer has not applied yet: the local samples already scheduled for
 	 * `tick + delay`. They carry their final ticks, so the peer applies exactly what this machine
 	 * will apply, on the same tick. (Sending the published history instead would hand the peer
-	 * frames it needed `delay` ticks ago.) */
-	latest_tick = published_frame.tick + syNetPeerGetActiveInputDelay();
+	 * frames it needed `delay` ticks ago.)
+	 *
+	 * The window follows the SCHEDULED tick, not the published one. Publishing only happens on VIs
+	 * that advance a tick, so a waiting peer's published tick stops moving; at delay 0 that is the
+	 * same number as the window, and a waiting peer would never send the tick the other peer is
+	 * waiting for - both wait forever. Scheduling still happens every VI, so this keeps moving. */
+	latest_tick = syNetInputGetTick() + syNetPeerGetActiveInputDelay();
 
 	for (back = SYNETPEER_MAX_PACKET_FRAMES - 1; back >= 0; back--)
 	{
