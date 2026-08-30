@@ -489,7 +489,25 @@ void syNetPeerApplyEnvMatchSettings(SYNetInputReplayMetadata *metadata)
 				metadata->player_kinds[slot] = nFTPlayerKindCom;
 				metadata->fighter_kinds[slot] = (u8)fighter;
 				metadata->levels[slot] = (u8)cpu_level;
-				metadata->player_count = (u32)(slot + 1);
+			}
+		}
+
+		/* Player 2 is the slot the remote peer drives, but a CPU there still works: the peer's
+		 * frames land in gSYControllerDevices[1], which ftComputerProcessAll never reads. The
+		 * human's own input still crosses the wire and is applied on both peers. */
+		if (syNetPeerReadEnvInt("SSB64_NETPLAY_P2_CPU", 0) != 0)
+		{
+			metadata->player_kinds[1] = nFTPlayerKindCom;
+			metadata->levels[1] = (u8)cpu_level;
+		}
+
+		metadata->player_count = 0;
+
+		for (slot = 0; slot < MAXCONTROLLERS; slot++)
+		{
+			if (metadata->player_kinds[slot] != nFTPlayerKindNot)
+			{
+				metadata->player_count++;
 			}
 		}
 	}
