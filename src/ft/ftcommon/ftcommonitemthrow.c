@@ -41,6 +41,25 @@ void ftCommonItemThrowUpdateModelYaw(GObj *fighter_gobj)
     }
 }
 
+#ifdef PORT
+/* motion_vars.item_throw is a bitfield view of the words motion scripts write through
+ * motion_vars.flags (ftmain.c: flag1 = damage word, flag2 = vel/angle word). The view
+ * only matches those words under IDO's big-endian, MSB-first bitfield allocation:
+ * clang/GCC on x86-64 allocate from the LSB (damage = flag1 >> 8 ...), MSVC additionally
+ * starts a new storage unit per bitfield base type (the union grows to 20 bytes and
+ * vel/angle read past flag3). Read the N64 bit positions explicitly on PC hosts.
+ * See docs/bugs/ftcommandvars_msvc_layout_2026-08-29.md (BattleShip). */
+#define FT_ITEMTHROW_IS_THROW(fp) ((fp)->motion_vars.flags.flag0)
+#define FT_ITEMTHROW_DAMAGE(fp)   ((fp)->motion_vars.flags.flag1 & 0xFFFFFFU)
+#define FT_ITEMTHROW_VEL(fp)      (((fp)->motion_vars.flags.flag2 >> 12) & 0xFFFU)
+#define FT_ITEMTHROW_ANGLE(fp)    ((s32)(((fp)->motion_vars.flags.flag2 & 0xFFFU) ^ 0x800U) - 0x800) /* s32:12 */
+#else
+#define FT_ITEMTHROW_IS_THROW(fp) ((fp)->motion_vars.item_throw.is_throw_item)
+#define FT_ITEMTHROW_DAMAGE(fp)   ((fp)->motion_vars.item_throw.damage)
+#define FT_ITEMTHROW_VEL(fp)      ((fp)->motion_vars.item_throw.vel)
+#define FT_ITEMTHROW_ANGLE(fp)    ((fp)->motion_vars.item_throw.angle)
+#endif
+
 // 0x8014634C
 void ftCommonItemThrowProcUpdate(GObj *fighter_gobj)
 {
@@ -56,18 +75,18 @@ void ftCommonItemThrowProcUpdate(GObj *fighter_gobj)
 
     if (fp->motion_vars.flags.flag2 != 0)
     {
-        fp->status_vars.common.itemthrow.throw_vel = F_PCT_TO_DEC(fp->motion_vars.item_throw.vel);
-        fp->status_vars.common.itemthrow.throw_angle = fp->motion_vars.item_throw.angle;
+        fp->status_vars.common.itemthrow.throw_vel = F_PCT_TO_DEC(FT_ITEMTHROW_VEL(fp));
+        fp->status_vars.common.itemthrow.throw_angle = FT_ITEMTHROW_ANGLE(fp);
 
         fp->motion_vars.flags.flag2 = 0;
     }
     if (fp->motion_vars.flags.flag1 != 0)
     {
-        fp->status_vars.common.itemthrow.throw_damage = F_PCT_TO_DEC(fp->motion_vars.item_throw.damage);
+        fp->status_vars.common.itemthrow.throw_damage = F_PCT_TO_DEC(FT_ITEMTHROW_DAMAGE(fp));
 
         fp->motion_vars.flags.flag1 = 0;
     }
-    if ((fp->item_gobj != NULL) && (fp->motion_vars.item_throw.is_throw_item != FALSE))
+    if ((fp->item_gobj != NULL) && (FT_ITEMTHROW_IS_THROW(fp) != FALSE))
     {
         if 
         (

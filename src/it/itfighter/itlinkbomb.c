@@ -15,7 +15,15 @@ extern void portFixupStructU16(void *base, unsigned int byte_offset, unsigned in
 // // // // // // // // // // // //
 
 // WARNING: Intentionally erroneous declaration. Missing two u16 arguments after f32. HAL's mistake, not mine.
+#ifdef PORT
+/* On the port the real prototype is used: with the 3-argument declaration the callee reads
+ * stat_flags/stat_count from unset argument registers — a different value on every host
+ * compiler, which the gameplay-state trace reports as an MSVC-vs-clang `items` divergence
+ * whenever Link's bomb detonates in hand. See itLinkBombProcUpdate below. */
+extern void itMainSetFighterRelease(GObj *item_gobj, Vec3f *vel, f32 throw_mul, u16 stat_flags, u16 stat_count);
+#else
 extern void itMainSetFighterRelease(GObj*, Vec3f*, f32);
+#endif
 
 // // // // // // // // // // // //
 //                               //
@@ -405,7 +413,19 @@ sb32 itLinkBombHoldProcUpdate(GObj *item_gobj)
 			// Update 3/23/2023: itMainSetFighterRelease matches as variadic. No comment.
 			// Update  7/2/2023: variadic match confirmed fake, so does this file really use an erroneous decleration?
 
+#ifdef PORT
+			/* Deterministic stand-in for the two arguments the original never passed: the
+			 * holder's current attack stat flags/count, as every other release path does. */
+			{
+				FTStruct *owner_fp = (ip->owner_gobj != NULL) ? ftGetStruct(ip->owner_gobj) : NULL;
+				u16 owner_stat_flags = (owner_fp != NULL) ? owner_fp->stat_flags.halfword : 0;
+				u16 owner_stat_count = (owner_fp != NULL) ? owner_fp->stat_count : 0;
+
+				itMainSetFighterRelease(item_gobj, &ip->physics.vel_air, 1.0F, owner_stat_flags, owner_stat_count);
+			}
+#else
 			itMainSetFighterRelease(item_gobj, &ip->physics.vel_air, 1.0F);
+#endif
 			itMainClearOwnerStats(item_gobj);
 			itLinkBombExplodeInitVars(item_gobj);
 		}

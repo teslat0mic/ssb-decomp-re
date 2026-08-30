@@ -259,7 +259,14 @@ static u32 hnn(u32 h, const void *p)
 
 static u32 syNetSyncHashStatFlags(u32 h, GMStatFlags *sf)
 {
-	return hu(h, (u32)sf->halfword);
+	/* Named fields only: the 3 `unused` bits of the halfword are stack garbage
+	 * whenever a local GMStatFlags is filled by name and copied whole (seen as
+	 * an MSVC-vs-clang `items` divergence on Link's bomb); the game never reads
+	 * them. */
+	h = hu(h, (u32)sf->attack_id);
+	h = hu(h, (u32)sf->is_projectile);
+	h = hu(h, (u32)sf->ga);
+	return hu(h, (u32)sf->is_smash_attack);
 }
 
 static u32 syNetSyncHashAttackRecords(u32 h, GMAttackRecord *records, s32 count)
@@ -1698,7 +1705,7 @@ void syNetSyncStartVSSession(void)
 		{
 			s32 i;
 
-			fprintf(sSYNetSyncTraceFile, "# ssb64h v1 tick");
+			fprintf(sSYNetSyncTraceFile, "# ssb64h v2 tick");
 
 			for (i = 0; i < SYNETSYNC_COLUMN_NUM; i++)
 			{
@@ -1730,6 +1737,91 @@ void syNetSyncStartVSSession(void)
 /* Attribution aid for a `fighters` divergence: the group hashes and the
  * identity-bearing fields of every fighter at one tick. Compare the lines
  * from the two builds. */
+static u32 syNetSyncF32Bits(f32 v)
+{
+	union { f32 f; u32 u; } pun;
+	pun.f = v;
+	return pun.u;
+}
+
+static void syNetSyncDumpItems(u32 tick)
+{
+	GObj *gobj;
+
+	for (gobj = gGCCommonLinks[nGCCommonLinkIDItem]; gobj != NULL; gobj = gobj->link_next)
+	{
+		ITStruct *ip = itGetStruct(gobj);
+		ITAttackColl *ac;
+		Vec3f *pos;
+		u32 g_coll;
+		u32 g_attack;
+		u32 g_damage;
+		s32 r;
+
+		if (ip == NULL)
+		{
+			continue;
+		}
+		ac = &ip->attack_coll;
+		pos = ip->coll_data.p_translate;
+		g_coll = syNetSyncHashMPCollData(SYNETSYNC_FNV_BASIS, &ip->coll_data);
+		g_attack = syNetSyncHashITAttackColl(SYNETSYNC_FNV_BASIS, ac);
+		g_damage = SYNETSYNC_FNV_BASIS;
+		g_damage = hs(g_damage, ip->damage_highest);
+		g_damage = hf(g_damage, ip->damage_knockback);
+		g_damage = hs(g_damage, ip->damage_queue);
+		g_damage = hs(g_damage, ip->damage_angle);
+		g_damage = hs(g_damage, ip->damage_element);
+		g_damage = hs(g_damage, ip->damage_lr);
+		g_damage = hid(g_damage, ip->damage_gobj);
+		g_damage = hs(g_damage, ip->damage_lag);
+
+		port_log("SSB64 SyncDump: tick=%u item=%08X kind=%d type=%d owner=%08X pct=%d lr=%d life=%d thrown=%u hold=%u "
+		         "nthrow=%u landed=%u pickup=%u ev=%u pos=%08X/%08X/%08X vair=%08X/%08X/%08X vg=%08X vscale=%08X "
+		         "spin=%08X coll=%08X atk=%08X dmg=%08X hitdmg=%d knock=%08X\n",
+		         tick, syNetSyncLookupKey(gobj), ip->kind, ip->type, syNetSyncLookupKey(ip->owner_gobj),
+		         ip->percent_damage, ip->lr, ip->lifetime, ip->is_thrown, ip->is_hold, ip->times_thrown,
+		         ip->times_landed, ip->pickup_wait, ip->event_id,
+		         (pos != NULL) ? syNetSyncF32Bits(pos->x) : 0U, (pos != NULL) ? syNetSyncF32Bits(pos->y) : 0U,
+		         (pos != NULL) ? syNetSyncF32Bits(pos->z) : 0U, syNetSyncF32Bits(ip->physics.vel_air.x),
+		         syNetSyncF32Bits(ip->physics.vel_air.y), syNetSyncF32Bits(ip->physics.vel_air.z),
+		         syNetSyncF32Bits(ip->physics.vel_ground), syNetSyncF32Bits(ip->vel_scale),
+		         syNetSyncF32Bits(ip->spin_step), g_coll, g_attack, g_damage, ip->hit_normal_damage,
+		         syNetSyncF32Bits(ip->damage_knockback));
+		port_log("SSB64 SyncDump: tick=%u item=%08X acoll astate=%d adm=%d tm=%08X st=%08X el=%d sz=%08X ang=%d "
+		         "kb=%u/%u/%u sd=%d prio=%d imask=%u fgm=%u can=%u%u%u%u%u%u%u maid=%u mcnt=%u sf=%04X sc=%u acnt=%d "
+		         "off0=%08X/%08X/%08X off1=%08X/%08X/%08X ap0=%08X/%08X/%08X,%08X/%08X/%08X,%d "
+		         "ap1=%08X/%08X/%08X,%08X/%08X/%08X,%d\n",
+		         tick, syNetSyncLookupKey(gobj), ac->attack_state, ac->damage, syNetSyncF32Bits(ac->throw_mul),
+		         syNetSyncF32Bits(ac->stale), ac->element, syNetSyncF32Bits(ac->size), ac->angle,
+		         ac->knockback_scale, ac->knockback_weight, ac->knockback_base, ac->shield_damage, ac->priority,
+		         ac->interact_mask, ac->fgm_id, ac->can_setoff, ac->can_rehit_item, ac->can_rehit_fighter,
+		         ac->can_rehit_shield, ac->can_hop, ac->can_reflect, ac->can_shield, ac->motion_attack_id,
+		         ac->motion_count, ac->stat_flags.halfword, ac->stat_count, ac->attack_count,
+		         syNetSyncF32Bits(ac->offsets[0].x), syNetSyncF32Bits(ac->offsets[0].y), syNetSyncF32Bits(ac->offsets[0].z),
+		         syNetSyncF32Bits(ac->offsets[1].x), syNetSyncF32Bits(ac->offsets[1].y), syNetSyncF32Bits(ac->offsets[1].z),
+		         syNetSyncF32Bits(ac->attack_pos[0].pos_curr.x), syNetSyncF32Bits(ac->attack_pos[0].pos_curr.y),
+		         syNetSyncF32Bits(ac->attack_pos[0].pos_curr.z), syNetSyncF32Bits(ac->attack_pos[0].pos_prev.x),
+		         syNetSyncF32Bits(ac->attack_pos[0].pos_prev.y), syNetSyncF32Bits(ac->attack_pos[0].pos_prev.z),
+		         ac->attack_pos[0].unk_ithitpos_0x18,
+		         syNetSyncF32Bits(ac->attack_pos[1].pos_curr.x), syNetSyncF32Bits(ac->attack_pos[1].pos_curr.y),
+		         syNetSyncF32Bits(ac->attack_pos[1].pos_curr.z), syNetSyncF32Bits(ac->attack_pos[1].pos_prev.x),
+		         syNetSyncF32Bits(ac->attack_pos[1].pos_prev.y), syNetSyncF32Bits(ac->attack_pos[1].pos_prev.z),
+		         ac->attack_pos[1].unk_ithitpos_0x18);
+		for (r = 0; r < GMATTACKREC_NUM_MAX; r++)
+		{
+			GMAttackRecord *rec = &ac->attack_records[r];
+
+			port_log("SSB64 SyncDump: tick=%u item=%08X rec%d victim=%08X hurt=%u shield=%u reflect=%u absorb=%u "
+			         "group=%u rehit=%u\n",
+			         tick, syNetSyncLookupKey(gobj), r, syNetSyncLookupKey(rec->victim_gobj),
+			         rec->victim_flags.is_interact_hurt, rec->victim_flags.is_interact_shield,
+			         rec->victim_flags.is_interact_reflect, rec->victim_flags.is_interact_absorb,
+			         rec->victim_flags.group_id, rec->victim_flags.timer_rehit);
+		}
+	}
+}
+
 static void syNetSyncDumpFighters(u32 tick)
 {
 	GObj *gobj;
@@ -1817,6 +1909,7 @@ void syNetSyncRecordTick(void)
 	if ((tick >= sSYNetSyncDumpTick) && (tick <= sSYNetSyncDumpTick + 2))
 	{
 		syNetSyncDumpFighters(tick);
+		syNetSyncDumpItems(tick);
 	}
 
 	/* The hook must run once per advanced input tick; if it ever drifts from
