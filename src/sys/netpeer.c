@@ -11,6 +11,7 @@
 #ifdef PORT
 extern char *getenv(const char *name);
 extern int atoi(const char *s);
+extern long strtol(const char *s, char **end, int base);
 extern void port_log(const char *fmt, ...);
 extern sb32 syNetInputGetScheduledFrame(s32 player, u32 tick, SYNetInputFrame *out_frame);
 extern sb32 syNetInputCheckRemoteFrameReady(s32 player, u32 tick);
@@ -342,6 +343,146 @@ sb32 syNetPeerOpenSocket(void)
 }
 #endif
 
+#ifdef PORT
+/* Match settings for the bootstrap, read from the environment on the host. The client never reads
+ * these: it takes the whole metadata block from the bootstrap packet, so the two cannot disagree. */
+typedef struct SYNetPeerNameMap
+{
+	const char *name;
+	s32 value;
+} SYNetPeerNameMap;
+
+const SYNetPeerNameMap dSYNetPeerStageNames[] =
+{
+	{ "castle", nGRKindCastle },   { "sector", nGRKindSector },   { "jungle", nGRKindJungle },
+	{ "zebes", nGRKindZebes },     { "hyrule", nGRKindHyrule },   { "yoster", nGRKindYoster },
+	{ "yoshi", nGRKindYoster },    { "pupupu", nGRKindPupupu },   { "dreamland", nGRKindPupupu },
+	{ "yamabuki", nGRKindYamabuki }, { "saffron", nGRKindYamabuki },
+	{ "inishie", nGRKindInishie }, { "mushroom", nGRKindInishie },
+	{ "metal", nGRKindMetal },     { "zako", nGRKindZako },       { "last", nGRKindLast },
+};
+
+const SYNetPeerNameMap dSYNetPeerFighterNames[] =
+{
+	{ "mario", nFTKindMario },     { "fox", nFTKindFox },         { "donkey", nFTKindDonkey },
+	{ "dk", nFTKindDonkey },       { "samus", nFTKindSamus },     { "luigi", nFTKindLuigi },
+	{ "link", nFTKindLink },       { "yoshi", nFTKindYoshi },     { "captain", nFTKindCaptain },
+	{ "falcon", nFTKindCaptain },  { "kirby", nFTKindKirby },     { "pikachu", nFTKindPikachu },
+	{ "purin", nFTKindPurin },     { "jiggly", nFTKindPurin },    { "puff", nFTKindPurin },
+	{ "ness", nFTKindNess },
+};
+
+const SYNetPeerNameMap dSYNetPeerItemRateNames[] =
+{
+	{ "none", nSCBattleItemSwitchNone },     { "off", nSCBattleItemSwitchNone },
+	{ "verylow", nSCBattleItemSwitchVeryLow }, { "low", nSCBattleItemSwitchLow },
+	{ "middle", nSCBattleItemSwitchMiddle }, { "normal", nSCBattleItemSwitchMiddle },
+	{ "high", nSCBattleItemSwitchHigh },     { "veryhigh", nSCBattleItemSwitchVeryHigh },
+};
+
+sb32 syNetPeerCheckNameEqual(const char *a, const char *b)
+{
+	while ((*a != '\0') && (*b != '\0'))
+	{
+		char ca = *a;
+		char cb = *b;
+
+		if ((ca >= 'A') && (ca <= 'Z')) ca = (char)(ca + ('a' - 'A'));
+		if ((cb >= 'A') && (cb <= 'Z')) cb = (char)(cb + ('a' - 'A'));
+		if (ca != cb)
+		{
+			return FALSE;
+		}
+		a++;
+		b++;
+	}
+	return ((*a == '\0') && (*b == '\0')) ? TRUE : FALSE;
+}
+
+s32 syNetPeerReadEnvEnum(const char *env_name, const SYNetPeerNameMap *map, s32 map_count,
+                         s32 fallback)
+{
+	const char *env = getenv(env_name);
+	s32 i;
+
+	if ((env == NULL) || (env[0] == '\0'))
+	{
+		return fallback;
+	}
+	if ((env[0] >= '0') && (env[0] <= '9'))
+	{
+		return atoi(env);
+	}
+	for (i = 0; i < map_count; i++)
+	{
+		if (syNetPeerCheckNameEqual(env, map[i].name) != FALSE)
+		{
+			return map[i].value;
+		}
+	}
+	port_log("SSB64 NetPeer: %s=%s not recognised, keeping default %d\n", env_name, env, fallback);
+	return fallback;
+}
+
+s32 syNetPeerReadEnvInt(const char *env_name, s32 fallback)
+{
+	const char *env = getenv(env_name);
+
+	if ((env == NULL) || (env[0] == '\0'))
+	{
+		return fallback;
+	}
+	return (s32)strtol(env, NULL, 0);
+}
+
+void syNetPeerApplyEnvMatchSettings(SYNetInputReplayMetadata *metadata)
+{
+	s32 item_rate;
+	s32 time_limit;
+
+	metadata->stage_kind =
+	syNetPeerReadEnvEnum("SSB64_NETPLAY_STAGE", dSYNetPeerStageNames,
+	                     (s32)ARRAY_COUNT(dSYNetPeerStageNames), (s32)metadata->stage_kind);
+	metadata->fighter_kinds[0] =
+	(u8)syNetPeerReadEnvEnum("SSB64_NETPLAY_P1", dSYNetPeerFighterNames,
+	                         (s32)ARRAY_COUNT(dSYNetPeerFighterNames), (s32)metadata->fighter_kinds[0]);
+	metadata->fighter_kinds[1] =
+	(u8)syNetPeerReadEnvEnum("SSB64_NETPLAY_P2", dSYNetPeerFighterNames,
+	                         (s32)ARRAY_COUNT(dSYNetPeerFighterNames), (s32)metadata->fighter_kinds[1]);
+	metadata->stocks = (u32)syNetPeerReadEnvInt("SSB64_NETPLAY_STOCKS", (s32)metadata->stocks);
+
+	item_rate =
+	syNetPeerReadEnvEnum("SSB64_NETPLAY_ITEMS", dSYNetPeerItemRateNames,
+	                     (s32)ARRAY_COUNT(dSYNetPeerItemRateNames), nSCBattleItemSwitchNone);
+	metadata->item_appearance_rate = (u8)item_rate;
+	metadata->item_switch = (u32)item_rate;
+
+	if (item_rate != nSCBattleItemSwitchNone)
+	{
+		/* Every item is eligible unless the caller narrows it, matching the game's own default. */
+		metadata->item_toggles = (u32)syNetPeerReadEnvInt("SSB64_NETPLAY_ITEM_TOGGLES", ~0);
+	}
+	else
+	{
+		metadata->item_toggles = 0;
+	}
+
+	time_limit = syNetPeerReadEnvInt("SSB64_NETPLAY_TIME", SCBATTLE_TIMELIMIT_INFINITE);
+	metadata->time_limit = (u32)time_limit;
+
+	if ((time_limit > 0) && (time_limit < SCBATTLE_TIMELIMIT_INFINITE))
+	{
+		/* A stock-only match ignores the clock, so a finite limit has to add the TIME rule for the
+		 * match to end on time (and, with the stocks level, reach sudden death). */
+		metadata->game_rules |= SCBATTLE_GAMERULE_TIME;
+	}
+	port_log("SSB64 NetPeer: match settings stage=%u p1=%u p2=%u stocks=%u time=%u items=%u toggles=0x%08X rules=0x%X\n",
+	         metadata->stage_kind, metadata->fighter_kinds[0], metadata->fighter_kinds[1],
+	         metadata->stocks, metadata->time_limit, metadata->item_appearance_rate,
+	         metadata->item_toggles, metadata->game_rules);
+}
+#endif
+
 void syNetPeerMakeBootstrapMetadata(SYNetInputReplayMetadata *metadata)
 {
 	s32 player;
@@ -381,6 +522,10 @@ void syNetPeerMakeBootstrapMetadata(SYNetInputReplayMetadata *metadata)
 	metadata->fighter_kinds[0] = nFTKindMario;
 	metadata->player_kinds[1] = nFTPlayerKindMan;
 	metadata->fighter_kinds[1] = nFTKindFox;
+
+#ifdef PORT
+	syNetPeerApplyEnvMatchSettings(metadata);
+#endif
 }
 
 void syNetPeerApplyBootstrapMetadata(const SYNetInputReplayMetadata *metadata)
